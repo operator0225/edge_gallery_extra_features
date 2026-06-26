@@ -104,6 +104,9 @@ open class LlmChatViewModelBase(
     model: Model,
     newPrompt: String,
     systemPromptUpdatedMessage: String,
+    tools: List<ToolProvider> = listOf(),
+    supportImage: Boolean = false,
+    supportAudio: Boolean = false,
   ) {
     _uiSystemPrompt.value = newPrompt
     viewModelScope.launch {
@@ -112,8 +115,9 @@ open class LlmChatViewModelBase(
         task = task,
         model = model,
         systemInstruction = Contents.of(newPrompt),
-        supportImage = true,
-        supportAudio = true,
+        supportImage = supportImage,
+        supportAudio = supportAudio,
+        tools = tools,
         onDone = { addMessage(model, ChatMessageInfo(content = systemPromptUpdatedMessage)) },
       )
     }

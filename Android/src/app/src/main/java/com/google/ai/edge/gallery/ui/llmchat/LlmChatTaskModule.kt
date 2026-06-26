@@ -46,9 +46,14 @@ import com.google.ai.edge.gallery.data.Category
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.runtime.runtimeHelper
+import com.google.ai.edge.gallery.tools.WebSearchTool
+import com.google.ai.edge.gallery.ui.common.chat.ChatMessageText
+import com.google.ai.edge.gallery.ui.common.chat.ChatSide
 import com.google.ai.edge.gallery.ui.theme.emptyStateContent
 import com.google.ai.edge.gallery.ui.theme.emptyStateTitle
 import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.tool
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -59,6 +64,20 @@ import kotlinx.coroutines.CoroutineScope
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // AI Chat.
+
+// Default system prompt for the AI Chat task.
+// Tells the model it has web search capability so it uses the tool proactively.
+const val LLM_CHAT_DEFAULT_SYSTEM_PROMPT =
+  """You are a helpful, accurate, and concise AI assistant running on-device.
+
+You have access to a web search tool called `searchWeb`. Use it whenever the user asks about:
+- Recent news, events, or information that may have changed after your training
+- Specific facts, statistics, or data you are not certain about
+- Product details, prices, or availability
+- Anything the user explicitly asks you to look up online
+
+When using search results, summarize the key findings clearly and cite the source if available.
+For general knowledge questions you are confident about, answer directly without searching."""
 
 class LlmChatTask @Inject constructor() : CustomTask {
   override val task: Task =
@@ -74,7 +93,10 @@ class LlmChatTask @Inject constructor() : CustomTask {
       sourceCodeUrl =
         "https://github.com/google-ai-edge/gallery/blob/main/Android/src/app/src/main/java/com/google/ai/edge/gallery/ui/llmchat/LlmChatModelHelper.kt",
       textInputPlaceHolderRes = R.string.text_input_placeholder_llm_chat,
+      defaultSystemPrompt = LLM_CHAT_DEFAULT_SYSTEM_PROMPT.trimIndent(),
     )
+
+  private val webSearchTool = WebSearchTool()
 
   override fun initializeModelFn(
     context: Context,
@@ -87,11 +109,12 @@ class LlmChatTask @Inject constructor() : CustomTask {
       context = context,
       model = model,
       taskId = task.id,
-      supportImage = false,
+      supportImage = model.llmSupportImage,
       supportAudio = false,
       onDone = onDone,
       coroutineScope = coroutineScope,
       systemInstruction = systemInstruction,
+      tools = listOf(tool(webSearchTool)),
     )
   }
 
@@ -111,19 +134,52 @@ class LlmChatTask @Inject constructor() : CustomTask {
     LaunchedEffect(task) { viewModel.loadSystemPrompt(task) }
     val uiSystemPrompt by viewModel.uiSystemPrompt.collectAsState()
     val systemPromptUpdatedMessage = stringResource(R.string.system_prompt_updated)
+
+    // Dynamically show image picker based on selected model's multimodal capability.
+    val uiState by myData.modelManagerViewModel.uiState.collectAsState()
+    val selectedModel = uiState.selectedModel
+    val showImagePicker = selectedModel?.llmSupportImage == true
+
+    val searchTools = listOf(tool(webSearchTool))
+
     LlmChatScreen(
       modelManagerViewModel = myData.modelManagerViewModel,
       navigateUp = myData.onNavUp,
       viewModel = viewModel,
       allowEditingSystemPrompt = true,
       curSystemPrompt = uiSystemPrompt,
+      showImagePicker = showImagePicker,
       onSystemPromptChanged = { newPrompt ->
-        val selectedModel = myData.modelManagerViewModel.uiState.value.selectedModel
         viewModel.applySystemPromptChange(
           task = task,
           model = selectedModel,
           newPrompt = newPrompt,
           systemPromptUpdatedMessage = systemPromptUpdatedMessage,
+          tools = searchTools,
+          supportImage = showImagePicker,
+          supportAudio = false,
+        )
+      },
+      onResetSessionClickedOverride = { _, model, chatMessages, clearHistory, onDone ->
+        val litertMessages = chatMessages.mapNotNull { chatMsg ->
+          if (chatMsg is ChatMessageText) {
+            when (chatMsg.side) {
+              ChatSide.USER -> Message.user(chatMsg.content)
+              ChatSide.AGENT -> Message.model(chatMsg.content)
+              else -> null
+            }
+          } else null
+        }
+        viewModel.resetSession(
+          task = task,
+          model = model,
+          systemInstruction = Contents.of(uiSystemPrompt),
+          supportImage = showImagePicker,
+          supportAudio = false,
+          tools = searchTools,
+          initialMessages = litertMessages,
+          onDone = onDone,
+          clearHistory = clearHistory,
         )
       },
       emptyStateComposable = {
